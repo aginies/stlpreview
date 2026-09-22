@@ -22,10 +22,35 @@ rendering, file metadata, and multiple view angles.
 
 ## Requirements
 
-- GCC (C99 compatible)
-- GTK3 development libraries (`libgtk-3-dev`)
-- CMake ≥ 3.10
-- `unzip` (required for 3MF support; STL-only usage works without it)
+### Build dependencies
+
+| Dependency | Purpose |
+| ------------ | --------- |
+| GCC (C99) | C compiler |
+| CMake ≥ 3.10 | Build system |
+| pkg-config | Locates the GTK3 headers/libs |
+| GTK3 development libraries | UI toolkit (links `gtk+-3.0` and `libm`) |
+
+No other libraries are needed — the 3D renderer is a self-contained software
+z-buffer (no OpenGL, no Qt, no mesh libraries).
+
+### Runtime dependencies
+
+| Dependency | Purpose |
+| ------------ | --------- |
+| GTK3 runtime libraries | Required |
+| `unzip` | 3MF support (extracts `3D/3dmodel.model`); STL-only usage works without it |
+| `xdg-open` | "Open Containing Folder" and "Open with Default App" menu items |
+
+### Installing build dependencies
+
+```bash
+# openSUSE
+sudo zypper install gcc make cmake pkg-config gtk3-devel unzip
+
+# macOS (Homebrew)
+brew install cmake pkgconf gtk@3 unzip
+```
 
 ## Building
 
