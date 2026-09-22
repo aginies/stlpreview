@@ -32,6 +32,24 @@ extern char *realpath(const char *path, char *resolved_path);
 #define LABEL_H 24
 #define MARGIN 8.0f
 
+/* CSS provider for the selected-item border */
+static GtkCssProvider *border_provider = NULL;
+static void ensure_border_provider(void)
+{
+    if (!border_provider) {
+        border_provider = gtk_css_provider_new();
+        gtk_css_provider_load_from_data(border_provider,
+            ".preview-border { "
+            "border: 2px solid #4a90d9; "
+            "border-radius: 3px; "
+            "}"
+            , -1, NULL);
+        gtk_style_context_add_provider_for_screen(
+            gdk_screen_get_default(), GTK_STYLE_PROVIDER(border_provider),
+            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* STL loading                                                         */
 /* ------------------------------------------------------------------ */
@@ -1881,6 +1899,13 @@ static GtkWidget *build_grid(UI *ui)
         gtk_widget_add_events(eb, GDK_BUTTON_PRESS_MASK);
         g_object_set_data(G_OBJECT(eb), "item", it);
 
+        /* Add border class for selected items */
+        if (it->selected) {
+            ensure_border_provider();
+            GtkStyleContext *ctx = gtk_widget_get_style_context(eb);
+            gtk_style_context_add_class(ctx, "preview-border");
+        }
+
         GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
         GtkWidget *img = gtk_image_new_from_surface(it->thumb);
         GtkWidget *label = gtk_label_new(it->name);
@@ -1890,20 +1915,7 @@ static GtkWidget *build_grid(UI *ui)
         gtk_box_pack_start(GTK_BOX(box), label, FALSE, FALSE, 0);
         gtk_container_add(GTK_CONTAINER(eb), box);
 
-        /* Wrap selected items in a frame border */
-        GtkWidget *child = eb;
-        if (it->selected) {
-            GtkWidget *frame = gtk_frame_new(NULL);
-            gtk_frame_set_shadow_type(GTK_FRAME(frame), GTK_SHADOW_OUT);
-            gtk_widget_set_margin_start(frame, 2);
-            gtk_widget_set_margin_end(frame, 2);
-            gtk_widget_set_margin_top(frame, 2);
-            gtk_widget_set_margin_bottom(frame, 2);
-            gtk_container_add(GTK_CONTAINER(frame), eb);
-            child = frame;
-        }
-
-        gtk_grid_attach(GTK_GRID(grid_w), child, (int)(i % ui->grid_cols),
+        gtk_grid_attach(GTK_GRID(grid_w), eb, (int)(i % ui->grid_cols),
                         (int)(i / ui->grid_cols), 1, 1);
         g_signal_connect(eb, "button-press-event",
                          G_CALLBACK(on_preview_clicked), ui);
