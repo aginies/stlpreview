@@ -1,0 +1,8 @@
+{
+  "ignore": [
+    "CMakeFiles/**",
+    "build/**",
+    "debug/**",
+    "release/**"
+  ]
+}

@@ -1,0 +1,9 @@
+build/
+build-debug/
+release/
+build/
+stl-grid
+# CMake files in source dir (from accidental `cmake -S . -B .`)
+CMakeCache.txt
+Makefile
+cmake_install.cmake
