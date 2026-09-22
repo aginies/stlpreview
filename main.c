@@ -37,8 +37,11 @@ extern char *realpath(const char *path, char *resolved_path);
 /* ------------------------------------------------------------------ */
 
 typedef struct {
-    float v[9]; /* 3 triangles vertices, xyz each */
+    float v[9]; /* 3 triangle vertices, xyz each */
+    uint32_t col; /* 0xRRGGBB face color; NO_COLOR = use default shade */
 } Tri;
+
+#define NO_COLOR 0xFFFFFFFFu
 
 typedef struct {
     Tri *tris;
@@ -66,17 +69,25 @@ typedef enum {
 
 static const char *sort_mode_names[] = { "Name", "Size", "Date" };
 
-static void mesh_push(Mesh *m, float a[9])
+static void mesh_push_col(Mesh *m, float a[9], uint32_t col)
 {
     if (m->count == m->cap) {
         m->cap = m->cap ? m->cap * 2 : 1024;
-        m->tris = realloc(m->tris, m->cap * sizeof(Tri));
-        if (!m->tris) {
+        Tri *tmp = realloc(m->tris, m->cap * sizeof(Tri));
+        if (!tmp) {
             fprintf(stderr, "out of memory\n");
             exit(1);
         }
+        m->tris = tmp;
     }
-    memcpy(&m->tris[m->count++].v, a, sizeof(float) * 9);
+    memcpy(&m->tris[m->count].v, a, sizeof(float) * 9);
+    m->tris[m->count].col = col;
+    m->count++;
+}
+
+static void mesh_push(Mesh *m, float a[9])
+{
+    mesh_push_col(m, a, NO_COLOR);
 }
 
 static int read_stl_binary(FILE *f, Mesh *m)
@@ -176,11 +187,41 @@ static int load_stl(const char *path, Mesh *m)
 /* ------------------------------------------------------------------ */
 
 typedef struct {
+    int objtype;   /* objecttype id whose <map> entries we are collecting */
+    int material;  /* material index */
+    int base;      /* base color index the map resolves to */
+} MfMap;
+
+typedef struct {
     V3 *verts;
     size_t v_count;
     size_t v_cap;
+    size_t mesh_base;   /* v_count at the start of the current <mesh> */
     Mesh *mesh;
+    uint32_t *base_colors; size_t n_base, cap_base;
+    MfMap *maps; size_t n_maps, cap_maps;
+    int cur_objtype;    /* enclosing <object type="...">, -1 = direct index */
+    int objtype;        /* enclosing <objecttype id="..."> */
 } MfParseCtx;
+
+/* Resolve a triangle's materialindex to a 0xRRGGBB color, or NO_COLOR. */
+static uint32_t mf_resolve_color(MfParseCtx *p, int materialindex)
+{
+    if (materialindex < 0)
+        return NO_COLOR;
+    if (p->cur_objtype >= 0) {
+        /* object references an <objecttype>: resolve via its <map> entries */
+        for (size_t i = 0; i < p->n_maps; ++i)
+            if (p->maps[i].objtype == p->cur_objtype &&
+                p->maps[i].material == materialindex) {
+                int b = p->maps[i].base;
+                return (b >= 0 && b < (int)p->n_base) ? p->base_colors[b] : NO_COLOR;
+            }
+        return NO_COLOR; /* mapped object but no map entry for this material */
+    }
+    /* type="model" / no objecttype: materialindex indexes basematerials directly */
+    return (materialindex < (int)p->n_base) ? p->base_colors[materialindex] : NO_COLOR;
+}
 
 static void on_start_element(GMarkupParseContext *ctx, const char *element_name,
                               const char **attr_names, const char **attr_values,
@@ -206,13 +247,24 @@ static void on_start_element(GMarkupParseContext *ctx, const char *element_name,
         }
         p->verts[p->v_count++] = (V3){x, y, z};
     }
+    else if (strcmp(element_name, "mesh") == 0 ||
+             strcmp(element_name, "vertices") == 0) {
+        /* each <mesh> has its own local vertex index space: a triangle's
+         * v1/v2/v3 are relative to the first vertex of THIS mesh, not the
+         * first vertex of the file. Remember where this mesh's vertices start. */
+        p->mesh_base = p->v_count;
+    }
     else if (strcmp(element_name, "triangle") == 0) {
-        int v1 = 0, v2 = 0, v3 = 0;
+        int v1 = 0, v2 = 0, v3 = 0, mat = -1;
         for (int i = 0; attr_names[i]; ++i) {
             if (strcmp(attr_names[i], "v1") == 0) v1 = atoi(attr_values[i]);
             else if (strcmp(attr_names[i], "v2") == 0) v2 = atoi(attr_values[i]);
             else if (strcmp(attr_names[i], "v3") == 0) v3 = atoi(attr_values[i]);
+            else if (strcmp(attr_names[i], "materialindex") == 0) mat = atoi(attr_values[i]);
         }
+        v1 += (int)p->mesh_base;
+        v2 += (int)p->mesh_base;
+        v3 += (int)p->mesh_base;
         if (v1 >= 0 && v1 < (int)p->v_count &&
             v2 >= 0 && v2 < (int)p->v_count &&
             v3 >= 0 && v3 < (int)p->v_count) {
@@ -220,8 +272,59 @@ static void on_start_element(GMarkupParseContext *ctx, const char *element_name,
             v[0] = p->verts[v1].x; v[1] = p->verts[v1].y; v[2] = p->verts[v1].z;
             v[3] = p->verts[v2].x; v[4] = p->verts[v2].y; v[5] = p->verts[v2].z;
             v[6] = p->verts[v3].x; v[7] = p->verts[v3].y; v[8] = p->verts[v3].z;
-            mesh_push(p->mesh, v);
+            mesh_push_col(p->mesh, v, mf_resolve_color(p, mat));
         }
+    }
+    else if (strcmp(element_name, "base") == 0) {
+        /* <base name="..." color="RRGGBB"/> inside <basematerials> */
+        for (int i = 0; attr_names[i]; ++i) {
+            if (strcmp(attr_names[i], "color") != 0) continue;
+            if (p->n_base == p->cap_base) {
+                p->cap_base = p->cap_base ? p->cap_base * 2 : 16;
+                uint32_t *tmp = realloc(p->base_colors, p->cap_base * sizeof(uint32_t));
+                if (!tmp) {
+                    fprintf(stderr, "out of memory\n");
+                    exit(1);
+                }
+                p->base_colors = tmp;
+            }
+            p->base_colors[p->n_base++] = (uint32_t)strtoul(attr_values[i], NULL, 16);
+            break;
+        }
+    }
+    else if (strcmp(element_name, "objecttype") == 0) {
+        int id = -1;
+        for (int i = 0; attr_names[i]; ++i)
+            if (strcmp(attr_names[i], "id") == 0) id = atoi(attr_values[i]);
+        p->objtype = id;
+    }
+    else if (strcmp(element_name, "map") == 0) {
+        int material = -1, pin = -1;
+        for (int i = 0; attr_names[i]; ++i) {
+            if (strcmp(attr_names[i], "material") == 0) material = atoi(attr_values[i]);
+            else if (strcmp(attr_names[i], "pin") == 0) pin = atoi(attr_values[i]);
+        }
+        if (p->n_maps == p->cap_maps) {
+            p->cap_maps = p->cap_maps ? p->cap_maps * 2 : 16;
+            MfMap *tmp = realloc(p->maps, p->cap_maps * sizeof(MfMap));
+            if (!tmp) {
+                fprintf(stderr, "out of memory\n");
+                exit(1);
+            }
+            p->maps = tmp;
+        }
+        p->maps[p->n_maps++] = (MfMap){p->objtype, material, pin};
+    }
+    else if (strcmp(element_name, "object") == 0) {
+        int type = -1;
+        for (int i = 0; attr_names[i]; ++i) {
+            if (strcmp(attr_names[i], "type") != 0) continue;
+            /* type="model" means "no objecttype" -> direct basematerials index */
+            type = (g_ascii_strcasecmp(attr_values[i], "model") == 0) ? -1
+                                                                     : atoi(attr_values[i]);
+            break;
+        }
+        p->cur_objtype = type;
     }
 }
 
@@ -239,7 +342,10 @@ static void on_text(GMarkupParseContext *ctx, const char *text, gsize text_len,
 
 static int read_3mf_xml(const char *xml, gsize xml_len, Mesh *m)
 {
-    MfParseCtx p = {NULL, 0, 0, m};
+    MfParseCtx p = {0};
+    p.mesh = m;
+    p.cur_objtype = -1;
+    p.objtype = -1;
 
     const GMarkupParser parser = {
         .start_element = on_start_element,
@@ -264,6 +370,8 @@ static int read_3mf_xml(const char *xml, gsize xml_len, Mesh *m)
 
     g_markup_parse_context_free(ctx);
     free(p.verts);
+    free(p.base_colors);
+    free(p.maps);
     return m->count > 0;
 }
 
@@ -450,10 +558,19 @@ static void render_mesh(const Mesh *mesh, cairo_surface_t *surface, int view_mod
         float spec = powf(spec_dot, 28.0f) * 0.45f;
         float inten = 0.35f + 0.65f * diff;
         
-        /* Modern Titanium Blue-Steel shade color */
-        int base_r = (int)(0x9D * inten + 0xFF * spec);
-        int base_g = (int)(0xB5 * inten + 0xFF * spec);
-        int base_b = (int)(0xC8 * inten + 0xFF * spec);
+        /* Face color: per-triangle 3MF material color, else titanium blue-steel */
+        uint32_t fc = mesh->tris[t].col;
+        int dr, dg, db;
+        if (fc != NO_COLOR) {
+            dr = (fc >> 16) & 0xFF;
+            dg = (fc >> 8) & 0xFF;
+            db = fc & 0xFF;
+        } else {
+            dr = 0x9D; dg = 0xB5; db = 0xC8; /* titanium blue-steel */
+        }
+        int base_r = (int)(dr * inten + 0xFF * spec);
+        int base_g = (int)(dg * inten + 0xFF * spec);
+        int base_b = (int)(db * inten + 0xFF * spec);
         if (base_r > 255) base_r = 255;
         if (base_g > 255) base_g = 255;
         if (base_b > 255) base_b = 255;
@@ -752,13 +869,17 @@ static char *cache_dir_path(void)
     return g_build_filename(g_get_user_cache_dir(), "stl-grid", "thumbs", NULL);
 }
 
-/* Build a cache filename from (path, view_mode, CELL). The key is a
- * hex-encoded SHA256 of the concatenated string so it is path-safe. */
+/* Bump when the renderer/parser changes so stale cached thumbnails are
+ * discarded (the key does not include file contents or app version). */
+#define CACHE_VERSION 2
+
+/* Build a cache filename from (path, view_mode, CELL, CACHE_VERSION). The
+ * key is a hex-encoded SHA256 of the concatenated string so it is path-safe. */
 static void cache_key(const char *file_path, int view_mode, char *out, size_t out_sz)
 {
     /* Use g_compute_checksum for a portable SHA256 */
     char buf[256];
-    int n = g_snprintf(buf, sizeof(buf), "%s:%d:%d", file_path, CELL, view_mode);
+    int n = g_snprintf(buf, sizeof(buf), "%s:%d:%d:v%d", file_path, CELL, view_mode, CACHE_VERSION);
     gchar *cs = g_compute_checksum_for_string(G_CHECKSUM_SHA256, buf, n);
     g_strlcpy(out, cs, out_sz);
     g_free(cs);
