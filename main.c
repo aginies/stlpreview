@@ -1602,16 +1602,20 @@ static gboolean on_preview_clicked(GtkWidget *w, GdkEventButton *ev, gpointer da
     UI *ui = (UI *)data;
 
     if (ev->button == 1) { /* Left click */
-        /* Block "changed" signal to avoid destroying the grid (and `it`)
-         * while we're still reading from it. */
-        GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(ui->tree));
-        g_signal_handlers_block_by_func(sel, G_CALLBACK(on_selection_changed), ui);
-        select_path_in_tree(ui, it->path);
-        g_signal_handlers_unblock_by_func(sel, G_CALLBACK(on_selection_changed), ui);
-        /* Now render — the grid will be rebuilt with fresh items */
-        ui->rendering = 1;
-        render_current_selection(ui);
-        after_render(ui);
+        /* Select the file in the tree (shows the highlight) without
+         * re-rendering the grid. This avoids destroying the current
+         * grid so other thumbnails remain visible. */
+        char *path = g_strdup(it->path);
+        GtkTreeSelection *sel = gtk_tree_view_get_selection(
+                GTK_TREE_VIEW(ui->tree));
+        g_signal_handlers_block_by_func(sel,
+                                        G_CALLBACK(on_selection_changed), ui);
+        select_path_in_tree(ui, path);
+        g_signal_handlers_unblock_by_func(sel,
+                                          G_CALLBACK(on_selection_changed), ui);
+        /* Update the status bar with info about the selected Item */
+        update_status_bar(ui, it);
+        g_free(path);
         return TRUE;
     } else if (ev->button == 3) { /* Right click */
         /* Select the file in the tree (shows the highlight) without re-rendering the grid.
