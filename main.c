@@ -1895,6 +1895,10 @@ static GtkWidget *build_grid(UI *ui)
         if (it->selected) {
             GtkWidget *frame = gtk_frame_new(NULL);
             gtk_frame_set_shadow_type(GTK_FRAME(frame), GTK_SHADOW_OUT);
+            gtk_widget_set_margin_start(frame, 2);
+            gtk_widget_set_margin_end(frame, 2);
+            gtk_widget_set_margin_top(frame, 2);
+            gtk_widget_set_margin_bottom(frame, 2);
             gtk_container_add(GTK_CONTAINER(frame), eb);
             child = frame;
         }
