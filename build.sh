@@ -12,6 +12,8 @@ build() {
   local out="$1"
   shift
   echo "→ Building $out ..."
+  # Clean stale CMake cache (e.g. after directory rename)
+  rm -rf "$DIR/$out/CMakeCache.txt" "$DIR/$out/CMakeFiles"
   cmake -S "$DIR" -B "$DIR/$out" "$@"
   cmake --build "$DIR/$out"
   echo "  ✓ $DIR/$out/sliceview"
