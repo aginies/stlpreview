@@ -709,6 +709,7 @@ typedef struct Item {
     int file_size;  /* file size in bytes */
     time_t mtime;   /* last modification time */
     int file_type;  /* 0=unknown, 1=binary STL, 2=ascii STL, 3=3MF */
+    int selected;   /* whether this item is currently selected in the grid */
 } Item;
 
 struct UI {
@@ -1605,6 +1606,7 @@ static gboolean on_preview_clicked(GtkWidget *w, GdkEventButton *ev, gpointer da
         /* Select the file in the tree (shows the highlight) without
          * re-rendering the grid. This avoids destroying the current
          * grid so other thumbnails remain visible. */
+        it->selected = 1;
         char *path = g_strdup(it->path);
         GtkTreeSelection *sel = gtk_tree_view_get_selection(
                 GTK_TREE_VIEW(ui->tree));
@@ -1888,7 +1890,16 @@ static GtkWidget *build_grid(UI *ui)
         gtk_box_pack_start(GTK_BOX(box), label, FALSE, FALSE, 0);
         gtk_container_add(GTK_CONTAINER(eb), box);
 
-        gtk_grid_attach(GTK_GRID(grid_w), eb, (int)(i % ui->grid_cols),
+        /* Wrap selected items in a frame border */
+        GtkWidget *child = eb;
+        if (it->selected) {
+            GtkWidget *frame = gtk_frame_new(NULL);
+            gtk_frame_set_shadow_type(GTK_FRAME(frame), GTK_SHADOW_OUT);
+            gtk_container_add(GTK_CONTAINER(frame), eb);
+            child = frame;
+        }
+
+        gtk_grid_attach(GTK_GRID(grid_w), child, (int)(i % ui->grid_cols),
                         (int)(i / ui->grid_cols), 1, 1);
         g_signal_connect(eb, "button-press-event",
                          G_CALLBACK(on_preview_clicked), ui);
