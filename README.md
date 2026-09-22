@@ -47,9 +47,6 @@ z-buffer (no OpenGL, no Qt, no mesh libraries).
 ```bash
 # openSUSE
 sudo zypper install gcc make cmake pkg-config gtk3-devel unzip
-
-# macOS (Homebrew)
-brew install cmake pkgconf gtk@3 unzip
 ```
 
 ## Building
