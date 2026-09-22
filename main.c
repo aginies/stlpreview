@@ -1,9 +1,9 @@
 /*
- * stl-grid — static grid viewer for all .stl files in a directory.
+ * sliceview — static grid viewer for all .stl files in a directory.
  *
  * Usage:
- *   stl-grid <directory>            show a scrollable grid of thumbnails
- *   stl-grid <directory> -o out.png render the grid to a PNG file instead
+ *   sliceview <directory>            show a scrollable grid of thumbnails
+ *   sliceview <directory> -o out.png render the grid to a PNG file instead
  *
  * The window shows a directory tree on the left (folders and .stl files,
  * loaded lazily) and a static grid of thumbnails on the right. Selecting
@@ -866,7 +866,7 @@ static void free_items(GPtrArray *items)
 
 static char *cache_dir_path(void)
 {
-    return g_build_filename(g_get_user_cache_dir(), "stl-grid", "thumbs", NULL);
+    return g_build_filename(g_get_user_cache_dir(), "sliceview", "thumbs", NULL);
 }
 
 /* Bump when the renderer/parser changes so stale cached thumbnails are
@@ -2091,10 +2091,10 @@ static void render_current_selection(UI *ui)
 
     char *title;
     if (is_dir)
-        title = g_strdup_printf("stl-grid — %s (%d files)", path,
+        title = g_strdup_printf("sliceview — %s (%d files)", path,
                                 (int)paths->len);
     else
-        title = g_strdup_printf("stl-grid — %s", path);
+        title = g_strdup_printf("sliceview — %s", path);
 
     GPtrArray *items = render_paths(paths, ui);
     show_items(ui, items, title);
@@ -2169,7 +2169,7 @@ static void set_root(UI *ui, const char *path)
 
 static char *last_dir_file(void)
 {
-    return g_build_filename(g_get_user_config_dir(), "stl-grid", "state", NULL);
+    return g_build_filename(g_get_user_config_dir(), "sliceview", "state", NULL);
 }
 
 static void save_last_dir(const char *path)
@@ -2238,13 +2238,13 @@ static void on_menu_about_clicked(GtkMenuItem *menuitem, gpointer data)
     (void)menuitem;
     UI *ui = (UI *)data;
     GtkWidget *dialog = gtk_about_dialog_new();
-    gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dialog), "stl-grid");
+    gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dialog), "sliceview");
     gtk_about_dialog_set_version(GTK_ABOUT_DIALOG(dialog), "1.1");
     gtk_about_dialog_set_comments(GTK_ABOUT_DIALOG(dialog),
         "A static grid viewer for .stl and .3mf 3D model files in a directory.\n"
         "Features high-fidelity Blinn-Phong shading and CAD-style outlines.");
     gtk_about_dialog_set_copyright(GTK_ABOUT_DIALOG(dialog), "Copyright © 2026 aginies");
-    gtk_about_dialog_set_website(GTK_ABOUT_DIALOG(dialog), "https://github.com/aginies/stl-grid");
+    gtk_about_dialog_set_website(GTK_ABOUT_DIALOG(dialog), "https://github.com/aginies/sliceview");
     
     gtk_window_set_transient_for(GTK_WINDOW(dialog), GTK_WINDOW(ui->window));
     gtk_window_set_modal(GTK_WINDOW(dialog), TRUE);
@@ -2580,7 +2580,7 @@ int main(int argc, char **argv)
         g_ptr_array_add(init_paths, paths->pdata[i]);
     show_loading(&ui, "Loading…");
     GPtrArray *items = render_paths(init_paths, &ui);
-    char *title = g_strdup_printf("stl-grid — %s (%d files, showing %d)", root, paths->len, n_init);
+    char *title = g_strdup_printf("sliceview — %s (%d files, showing %d)", root, paths->len, n_init);
     show_items(&ui, items, title);
     g_ptr_array_free(init_paths, FALSE);
 

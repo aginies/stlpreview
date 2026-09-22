@@ -1,4 +1,4 @@
-# stl-grid
+# sliceview
 
 A standalone GTK3 viewer for STL and 3MF 3D model files. Displays a directory tree
 on the left and a scrollable grid of thumbnails on the right, with wireframe-style
@@ -7,7 +7,7 @@ rendering, file metadata, and multiple view angles.
 ## Features
 
 - **Directory tree** — Left panel with lazy-loaded folders and `.stl` / `.3mf` files
-- **Thumbnail grid** — SHA256-based PNG cache in `~/.cache/stl-grid/thumbs/`
+- **Thumbnail grid** — SHA256-based PNG cache in `~/.cache/sliceview/thumbs/`
 - **Software rendering** — Z-buffer rasterizer with Blinn-Phong shading, ambient occlusion, and CAD-style outline edges (no OpenGL)
 - **View angles** — 45°, -45°, Front, Back, Left, Right (radio buttons in toolbar)
 - **Sort options** — Name, Size, Date (combo box in toolbar)
@@ -81,7 +81,7 @@ cmake --build debug
 ## Running
 
 ```bash
-./release/stl-grid
+./release/sliceview
 ```
 
 Then navigate a directory containing `.stl` or `.3mf` files.
@@ -90,10 +90,10 @@ Then navigate a directory containing `.stl` or `.3mf` files.
 
 ```bash
 # Open a specific directory
-./release/stl-grid /path/to/models
+./release/sliceview /path/to/models
 
 # Render the grid to a PNG (no GUI)
-./release/stl-grid /path/to/models -o output.png
+./release/sliceview /path/to/models -o output.png
 ```
 
 ## License

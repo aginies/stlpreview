@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# stl-grid — build script
+# sliceview — build script
 # Usage:
 #   ./build.sh          → release (build/)
 #   ./build.sh debug    → debug   (build-debug/)
@@ -14,7 +14,7 @@ build() {
   echo "→ Building $out ..."
   cmake -S "$DIR" -B "$DIR/$out" "$@"
   cmake --build "$DIR/$out"
-  echo "  ✓ $DIR/$out/stl-grid"
+  echo "  ✓ $DIR/$out/sliceview"
 }
 
 case "${1:-release}" in
