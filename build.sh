@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# sliceview — build script
+# stlpreview — build script
 # Usage:
-#   ./build.sh          → release (build/)
-#   ./build.sh debug    → debug   (build-debug/)
+#   ./build.sh          → release (release/)
+#   ./build.sh debug    → debug   (debug/)
 #   ./build.sh clean    → remove all build dirs
 
 set -euo pipefail
@@ -15,20 +15,21 @@ build() {
   # Clean stale CMake cache (e.g. after directory rename)
   rm -rf "$DIR/$out/CMakeCache.txt" "$DIR/$out/CMakeFiles"
   cmake -S "$DIR" -B "$DIR/$out" "$@"
-  cmake --build "$DIR/$out"
-  echo "  ✓ $DIR/$out/sliceview"
+  cmake --build "$DIR/$out" --parallel "$(nproc)"
+  test -x "$DIR/$out/stlpreview"
+  echo "  ✓ $DIR/$out/stlpreview"
 }
 
 case "${1:-release}" in
 debug)
-  build debug -DSTL_GRID_DEBUG=ON -DCMAKE_BUILD_TYPE=Debug
+  build debug -DSTL_GRID_DEBUG=ON -DCMAKE_BUILD_TYPE=Debug "${@:2}"
   ;;
 release)
-  build release
+  build release -DCMAKE_BUILD_TYPE=Release "${@:2}"
   ;;
 clean)
   echo "→ Cleaning ..."
-  rm -rf "$DIR/build" "$DIR/build-release" "$DIR/build-debug"
+  rm -rf "$DIR/debug" "$DIR/release"
   echo "  ✓ done"
   ;;
 *)
