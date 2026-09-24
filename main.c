@@ -1,9 +1,9 @@
 /*
- * sliceview — static grid viewer for all .stl files in a directory.
+ * stlpreview — static grid viewer for all .stl files in a directory.
  *
  * Usage:
- *   sliceview <directory>            show a scrollable grid of thumbnails
- *   sliceview <directory> -o out.png render the grid to a PNG file instead
+ *   stlpreview <directory>            show a scrollable grid of thumbnails
+ *   stlpreview <directory> -o out.png render the grid to a PNG file instead
  *
  * The window shows a directory tree on the left (folders and .stl files,
  * loaded lazily) and a static grid of thumbnails on the right. Selecting
@@ -728,6 +728,7 @@ typedef struct Item {
     time_t mtime;   /* last modification time */
     int file_type;  /* 0=unknown, 1=binary STL, 2=ascii STL, 3=3MF */
     int selected;   /* whether this item is currently selected in the grid */
+    GtkWidget *grid_cell; /* this item's event box in the current grid */
 } Item;
 
 struct UI {
@@ -738,6 +739,7 @@ struct UI {
     GtkWidget *grid;
     GtkWidget *path_label; /* current root path, shown above the tree */
     GPtrArray *items; /* current items shown in the grid */
+    Item *selected_item; /* grid item currently showing the blue border */
     ViewMode view_mode;
     SortMode sort_mode;
     int grid_cols;    /* columns in the currently built grid */
@@ -885,7 +887,7 @@ static void free_items(GPtrArray *items)
 
 static char *cache_dir_path(void)
 {
-    return g_build_filename(g_get_user_cache_dir(), "sliceview", "thumbs", NULL);
+    return g_build_filename(g_get_user_cache_dir(), "stlpreview", "thumbs", NULL);
 }
 
 /* Bump when the renderer/parser changes so stale cached thumbnails are
@@ -1609,6 +1611,25 @@ static void on_open_default(GtkMenuItem *menuitem, gpointer data)
     g_free(cmd);
 }
 
+/* Move the blue selection border to `it`'s thumbnail without rebuilding
+ * the grid (rebuilding would destroy the other thumbnails). */
+static void set_grid_selection(UI *ui, Item *it)
+{
+    ensure_border_provider();
+    if (ui->selected_item && ui->selected_item != it &&
+        ui->selected_item->grid_cell) {
+        gtk_style_context_remove_class(
+            gtk_widget_get_style_context(ui->selected_item->grid_cell),
+            "preview-border");
+        ui->selected_item->selected = 0;
+    }
+    it->selected = 1;
+    ui->selected_item = it;
+    if (it->grid_cell)
+        gtk_style_context_add_class(
+            gtk_widget_get_style_context(it->grid_cell), "preview-border");
+}
+
 /* Click on a preview thumbnail: select the corresponding file in the tree,
  * or right-click to show a context menu. */
 static void on_selection_changed(GtkTreeSelection *sel, UI *ui);
@@ -1621,10 +1642,10 @@ static gboolean on_preview_clicked(GtkWidget *w, GdkEventButton *ev, gpointer da
     UI *ui = (UI *)data;
 
     if (ev->button == 1) { /* Left click */
+        set_grid_selection(ui, it);
         /* Select the file in the tree (shows the highlight) without
          * re-rendering the grid. This avoids destroying the current
          * grid so other thumbnails remain visible. */
-        it->selected = 1;
         char *path = g_strdup(it->path);
         GtkTreeSelection *sel = gtk_tree_view_get_selection(
                 GTK_TREE_VIEW(ui->tree));
@@ -1638,6 +1659,7 @@ static gboolean on_preview_clicked(GtkWidget *w, GdkEventButton *ev, gpointer da
         g_free(path);
         return TRUE;
     } else if (ev->button == 3) { /* Right click */
+        set_grid_selection(ui, it);
         /* Select the file in the tree (shows the highlight) without re-rendering the grid.
          * This avoids destroying this event box, the GdkEventButton 'ev', and freeing 'it'. */
         char *path = g_strdup(it->path);
@@ -1898,12 +1920,14 @@ static GtkWidget *build_grid(UI *ui)
         gtk_event_box_set_above_child(GTK_EVENT_BOX(eb), TRUE);
         gtk_widget_add_events(eb, GDK_BUTTON_PRESS_MASK);
         g_object_set_data(G_OBJECT(eb), "item", it);
+        it->grid_cell = eb;
 
         /* Add border class for selected items */
         if (it->selected) {
             ensure_border_provider();
             GtkStyleContext *ctx = gtk_widget_get_style_context(eb);
             gtk_style_context_add_class(ctx, "preview-border");
+            ui->selected_item = it;
         }
 
         GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
@@ -1952,6 +1976,7 @@ static void on_grid_scroll_size_allocate(GtkWidget *w, GdkRectangle *alloc,
 /* Replace the grid contents with `items` and update the title. */
 static void show_items(UI *ui, GPtrArray *items, const char *title)
 {
+    ui->selected_item = NULL; /* old items (and their grid cells) are freed */
     free_items(ui->items);
     for (guint i = 0; i < items->len; ++i)
         g_ptr_array_add(ui->items, items->pdata[i]);
@@ -2122,10 +2147,10 @@ static void render_current_selection(UI *ui)
 
     char *title;
     if (is_dir)
-        title = g_strdup_printf("sliceview — %s (%d files)", path,
+        title = g_strdup_printf("stlpreview — %s (%d files)", path,
                                 (int)paths->len);
     else
-        title = g_strdup_printf("sliceview — %s", path);
+        title = g_strdup_printf("stlpreview — %s", path);
 
     GPtrArray *items = render_paths(paths, ui);
     show_items(ui, items, title);
@@ -2200,7 +2225,7 @@ static void set_root(UI *ui, const char *path)
 
 static char *last_dir_file(void)
 {
-    return g_build_filename(g_get_user_config_dir(), "sliceview", "state", NULL);
+    return g_build_filename(g_get_user_config_dir(), "stlpreview", "state", NULL);
 }
 
 static void save_last_dir(const char *path)
@@ -2269,13 +2294,13 @@ static void on_menu_about_clicked(GtkMenuItem *menuitem, gpointer data)
     (void)menuitem;
     UI *ui = (UI *)data;
     GtkWidget *dialog = gtk_about_dialog_new();
-    gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dialog), "sliceview");
+    gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dialog), "stlpreview");
     gtk_about_dialog_set_version(GTK_ABOUT_DIALOG(dialog), "1.1");
     gtk_about_dialog_set_comments(GTK_ABOUT_DIALOG(dialog),
         "A static grid viewer for .stl and .3mf 3D model files in a directory.\n"
         "Features high-fidelity Blinn-Phong shading and CAD-style outlines.");
     gtk_about_dialog_set_copyright(GTK_ABOUT_DIALOG(dialog), "Copyright © 2026 aginies");
-    gtk_about_dialog_set_website(GTK_ABOUT_DIALOG(dialog), "https://github.com/aginies/sliceview");
+    gtk_about_dialog_set_website(GTK_ABOUT_DIALOG(dialog), "https://github.com/aginies/stlpreview");
     
     gtk_window_set_transient_for(GTK_WINDOW(dialog), GTK_WINDOW(ui->window));
     gtk_window_set_modal(GTK_WINDOW(dialog), TRUE);
@@ -2611,7 +2636,7 @@ int main(int argc, char **argv)
         g_ptr_array_add(init_paths, paths->pdata[i]);
     show_loading(&ui, "Loading…");
     GPtrArray *items = render_paths(init_paths, &ui);
-    char *title = g_strdup_printf("sliceview — %s (%d files, showing %d)", root, paths->len, n_init);
+    char *title = g_strdup_printf("stlpreview — %s (%d files, showing %d)", root, paths->len, n_init);
     show_items(&ui, items, title);
     g_ptr_array_free(init_paths, FALSE);
 
