@@ -14,8 +14,10 @@ build() {
   echo "→ Building $out ..."
   # Clean stale CMake cache (e.g. after directory rename)
   rm -rf "$DIR/$out/CMakeCache.txt" "$DIR/$out/CMakeFiles"
-  cmake -S "$DIR" -B "$DIR/$out" "$@"
+  cmake -S "$DIR" -B "$DIR/$out" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON "$@"
   cmake --build "$DIR/$out" --parallel "$(nproc)"
+  # Let LSP tools (clangd) find the pkg-config include paths
+  ln -sf "$DIR/$out/compile_commands.json" "$DIR/compile_commands.json"
   test -x "$DIR/$out/stlpreview"
   echo "  ✓ $DIR/$out/stlpreview"
 }

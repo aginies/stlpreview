@@ -15,10 +15,11 @@ option(STL_GRID_DEBUG "Build with debug flags (-g -O0 -DDEBUG)" OFF)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
+find_package(ZLIB REQUIRED)
 
 add_executable(stlpreview main.c)
 target_include_directories(stlpreview PRIVATE ${GTK3_INCLUDE_DIRS})
-target_link_libraries(stlpreview ${GTK3_LIBRARIES} m)
+target_link_libraries(stlpreview ${GTK3_LIBRARIES} m ZLIB::ZLIB)
 if(STL_GRID_DEBUG)
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -O0 -DDEBUG")
 else()

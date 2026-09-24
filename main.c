@@ -24,6 +24,7 @@
 #include <strings.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <zlib.h>
 
 /* realpath declaration (avoids needing _GNU_SOURCE/_POSIX_C_SOURCE) */
 extern char *realpath(const char *path, char *resolved_path);
@@ -206,8 +207,8 @@ static int load_stl(const char *path, Mesh *m)
 
 typedef struct {
     int objtype;   /* objecttype id whose <map> entries we are collecting */
-    int material;  /* material index */
-    int base;      /* base color index the map resolves to */
+    int material;  /* material index (1-based, as in the file) */
+    int base;      /* 0-based base color index the map resolves to (-1 = none) */
 } MfMap;
 
 typedef struct {
@@ -222,23 +223,24 @@ typedef struct {
     int objtype;        /* enclosing <objecttype id="..."> */
 } MfParseCtx;
 
-/* Resolve a triangle's materialindex to a 0xRRGGBB color, or NO_COLOR. */
+/* Resolve a triangle's materialindex to a 0xRRGGBB color, or NO_COLOR.
+ * 3MF material indices are 1-based; 0/absent means "no material". */
 static uint32_t mf_resolve_color(MfParseCtx *p, int materialindex)
 {
-    if (materialindex < 0)
+    if (materialindex <= 0)
         return NO_COLOR;
     if (p->cur_objtype >= 0) {
         /* object references an <objecttype>: resolve via its <map> entries */
         for (size_t i = 0; i < p->n_maps; ++i)
             if (p->maps[i].objtype == p->cur_objtype &&
                 p->maps[i].material == materialindex) {
-                int b = p->maps[i].base;
+                int b = p->maps[i].base; /* stored 0-based */
                 return (b >= 0 && b < (int)p->n_base) ? p->base_colors[b] : NO_COLOR;
             }
         return NO_COLOR; /* mapped object but no map entry for this material */
     }
     /* type="model" / no objecttype: materialindex indexes basematerials directly */
-    return (materialindex < (int)p->n_base) ? p->base_colors[materialindex] : NO_COLOR;
+    return (materialindex - 1 < (int)p->n_base) ? p->base_colors[materialindex - 1] : NO_COLOR;
 }
 
 static void on_start_element(GMarkupParseContext *ctx, const char *element_name,
@@ -331,7 +333,8 @@ static void on_start_element(GMarkupParseContext *ctx, const char *element_name,
             }
             p->maps = tmp;
         }
-        p->maps[p->n_maps++] = (MfMap){p->objtype, material, pin};
+        /* pin is 1-based in the file; store 0-based (-1 or less = absent) */
+        p->maps[p->n_maps++] = (MfMap){p->objtype, material, pin - 1};
     }
     else if (strcmp(element_name, "object") == 0) {
         int type = -1;
@@ -393,29 +396,144 @@ static int read_3mf_xml(const char *xml, gsize xml_len, Mesh *m)
     return m->count > 0;
 }
 
+/* ------------------------------------------------------------------ */
+/* Minimal ZIP reader (zlib inflate) — extracts the 3MF .model part    */
+/* ------------------------------------------------------------------ */
+
+/* Find the End Of Central Directory record; returns its offset or -1. */
+static long zip_find_eocd(const uint8_t *z, size_t len)
+{
+    if (len < 22)
+        return -1;
+    size_t floor = len > 22 + 65535 ? len - 22 - 65535 : 0;
+    for (size_t i = len - 22; ; i--) {
+        if (z[i] == 0x50 && z[i + 1] == 0x4b && z[i + 2] == 0x05 && z[i + 3] == 0x06)
+            return (long)i;
+        if (i == floor)
+            break;
+    }
+    return -1;
+}
+
+/* Extract the first archive entry whose name ends with ".model" (the 3MF
+ * model part, conventionally 3D/3dmodel.model). Returns a g_malloc'd
+ * buffer, or NULL. */
+static uint8_t *zip_extract_model(const uint8_t *z, size_t len, size_t *out_len)
+{
+    long eocd = zip_find_eocd(z, len);
+    if (eocd < 0)
+        return NULL;
+    uint16_t n_entries;
+    uint32_t cd_off;
+    memcpy(&n_entries, z + eocd + 10, 2);
+    memcpy(&cd_off, z + eocd + 16, 4);
+
+    size_t pos = cd_off;
+    for (int i = 0; i < n_entries; ++i) {
+        if (pos + 46 > len || memcmp(z + pos, "\x50\x4b\x01\x02", 4) != 0)
+            return NULL;
+        uint16_t method, name_len, extra_len, comment_len;
+        uint32_t comp_size, uncomp_size, local_off;
+        memcpy(&method, z + pos + 10, 2);
+        memcpy(&comp_size, z + pos + 20, 4);
+        memcpy(&uncomp_size, z + pos + 24, 4);
+        memcpy(&name_len, z + pos + 28, 2);
+        memcpy(&extra_len, z + pos + 30, 2);
+        memcpy(&comment_len, z + pos + 32, 2);
+        memcpy(&local_off, z + pos + 42, 4);
+        size_t name_off = pos + 46;
+        if (name_off + name_len > len)
+            return NULL;
+        char name[1024];
+        if (name_len < sizeof(name)) {
+            memcpy(name, z + name_off, name_len);
+            name[name_len] = '\0';
+        } else {
+            name[0] = '\0'; /* too long to be a model part */
+        }
+        pos = name_off + name_len + extra_len + comment_len;
+        if (!g_str_has_suffix(name, ".model"))
+            continue;
+
+        /* local file header → data offset */
+        if (local_off + 30 > len ||
+            memcmp(z + local_off, "\x50\x4b\x03\x04", 4) != 0)
+            continue;
+        uint16_t lname_len, lextra_len;
+        memcpy(&lname_len, z + local_off + 26, 2);
+        memcpy(&lextra_len, z + local_off + 28, 2);
+        size_t data_off = local_off + 30 + lname_len + lextra_len;
+        if (data_off + comp_size > len)
+            continue;
+        const uint8_t *src = z + data_off;
+
+        if (method == 0) { /* stored */
+            uint8_t *out = g_malloc(uncomp_size ? uncomp_size : 1);
+            memcpy(out, src, uncomp_size);
+            *out_len = uncomp_size;
+            return out;
+        }
+        if (method != 8) /* deflate only */
+            continue;
+
+        z_stream zs;
+        memset(&zs, 0, sizeof(zs));
+        /* ZIP stores raw deflate (no zlib header): windowBits = -15 */
+        if (inflateInit2(&zs, -15) != Z_OK)
+            continue;
+        size_t cap = uncomp_size > 0 ? uncomp_size : 65536;
+        uint8_t *out = g_malloc(cap);
+        zs.next_in = (Bytef *)src;
+        zs.avail_in = comp_size;
+        zs.next_out = out;
+        zs.avail_out = cap;
+        int ok = 0;
+        for (;;) {
+            if (zs.avail_out == 0) {
+                cap *= 2;
+                out = g_realloc(out, cap);
+                zs.next_out = out + zs.total_out;
+                zs.avail_out = (uInt)(cap - zs.total_out);
+            }
+            uInt avail_before = zs.avail_out;
+            int ret = inflate(&zs, Z_NO_FLUSH);
+            if (ret == Z_STREAM_END) {
+                ok = 1;
+                break;
+            }
+            if (ret != Z_OK || (zs.avail_in == 0 && zs.avail_out == avail_before))
+                break; /* error, or stuck: truncated/corrupt stream */
+        }
+        inflateEnd(&zs);
+        if (!ok) {
+            g_free(out);
+            continue;
+        }
+        *out_len = zs.total_out;
+        return out;
+    }
+    return NULL;
+}
+
 static int load_3mf(const char *path, Mesh *m)
 {
-    char *quoted = g_shell_quote(path);
-    char *cmd = g_strdup_printf("unzip -p %s 3D/3dmodel.model", quoted);
-    g_free(quoted);
-
     GError *err = NULL;
-    char *xml = NULL;
-    int status = 0;
-    g_spawn_command_line_sync(cmd, &xml, NULL, &status, &err);
-    g_free(cmd);
-    if (!xml || err) {
-        if (err)
-            g_warning("load_3mf: unzip failed: %s", err->message);
-        else
-            g_warning("load_3mf: unzip failed (unzip not installed?)");
-        g_free(xml);
+    char *blob = NULL;
+    gsize blob_len = 0;
+    if (!g_file_get_contents(path, &blob, &blob_len, &err)) {
+        g_warning("load_3mf: cannot read %s: %s", path,
+                  err ? err->message : "unknown error");
         if (err) g_error_free(err);
         return 0;
     }
-    gsize xml_len = strlen(xml);
-
-    int ok = read_3mf_xml(xml, xml_len, m);
+    size_t xml_len = 0;
+    uint8_t *xml = zip_extract_model((const uint8_t *)blob, blob_len, &xml_len);
+    g_free(blob);
+    if (!xml) {
+        g_warning("load_3mf: no .model part found in %s", path);
+        return 0;
+    }
+    int ok = read_3mf_xml((const char *)xml, xml_len, m);
     g_free(xml);
     return ok;
 }
@@ -519,14 +637,11 @@ static void render_mesh(const Mesh *mesh, cairo_surface_t *surface, int view_mod
         }
     }
 
-    /* z-buffer: starts at +∞, front-to-back (smaller z wins)
-     * Also track depth for shadow (ambient occlusion) */
+    /* z-buffer: starts at FLT_MAX (0x7f7f7f7f), front-to-back (smaller z wins) */
     float *depth = calloc((size_t)w * h, sizeof(float));
-    float *ao     = calloc((size_t)w * h, sizeof(float));  /* ambient occlusion */
-    if (!depth || !ao)
+    if (!depth)
         return;
     memset(depth, 0x7f, (size_t)w * h * sizeof(float));
-    memset(ao, 0, (size_t)w * h * sizeof(float));
 
     /* light direction in view space (normalized) */
     V3 light = {-0.45f, 0.65f, 0.61f};
@@ -625,10 +740,11 @@ static void render_mesh(const Mesh *mesh, cairo_surface_t *surface, int view_mod
                 size_t idx = (size_t)py * w + px_;
                 if (d < depth[idx]) {
                     depth[idx] = d;
-                    /* accumulate AO: further from camera = darker */
-                    float ao_val = 1.0f - 0.2f * (1.0f - fminf(d / ext, 1.0f));
-                    ao[idx] = fmaxf(ao[idx], ao_val);
-                    /* apply AO to color */
+                    /* depth cue: darker toward the back of the mesh
+                     * (d < 0 = in front of the mesh center → no darkening) */
+                    float dn = fminf(fmaxf(d / ext, 0.0f), 1.0f);
+                    float ao_val = 1.0f - 0.2f * dn;
+                    /* apply to color */
                     int fr = (int)(base_r * ao_val);
                     int fg = (int)(base_g * ao_val);
                     int fb = (int)(base_b * ao_val);
@@ -685,7 +801,6 @@ static void render_mesh(const Mesh *mesh, cairo_surface_t *surface, int view_mod
     }
 
     free(depth);
-    free(ao);
 }
 
 /* ------------------------------------------------------------------ */
@@ -695,7 +810,7 @@ static void render_mesh(const Mesh *mesh, cairo_surface_t *surface, int view_mod
 typedef struct Item Item;
 typedef struct UI UI;
 
-static char *format_file_size(int bytes);
+static char *format_file_size(int64_t bytes);
 static char *format_file_date(time_t mtime);
 static const char *file_type_label(int type);
 static void start_move(UI *ui, Item *it);
@@ -724,7 +839,7 @@ typedef struct Item {
     float ext;      /* max axis extent */
     int tri_count;  /* number of triangles */
     int vert_count; /* number of vertices */
-    int file_size;  /* file size in bytes */
+    int64_t file_size;  /* file size in bytes */
     time_t mtime;   /* last modification time */
     int file_type;  /* 0=unknown, 1=binary STL, 2=ascii STL, 3=3MF */
     int selected;   /* whether this item is currently selected in the grid */
@@ -766,10 +881,10 @@ enum { COL_NAME, COL_PATH, COL_ISDIR, COL_LOADED, N_COLS };
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
-static char *format_file_size(int bytes)
+static char *format_file_size(int64_t bytes)
 {
     if (bytes < 1024)
-        return g_strdup_printf("%d B", bytes);
+        return g_strdup_printf("%" G_GINT64_FORMAT " B", bytes);
     if (bytes < 1024 * 1024)
         return g_strdup_printf("%.1f KB", bytes / 1024.0);
     return g_strdup_printf("%.1f MB", bytes / (1024.0 * 1024.0));
@@ -891,49 +1006,97 @@ static char *cache_dir_path(void)
 }
 
 /* Bump when the renderer/parser changes so stale cached thumbnails are
- * discarded (the key does not include file contents or app version). */
-#define CACHE_VERSION 2
+ * discarded. The key also includes file mtime + size, so in-place edits
+ * invalidate the entry. */
+#define CACHE_VERSION 4
 
-/* Build a cache filename from (path, view_mode, CELL, CACHE_VERSION). The
- * key is a hex-encoded SHA256 of the concatenated string so it is path-safe. */
-static void cache_key(const char *file_path, int view_mode, char *out, size_t out_sz)
+/* Hex SHA256 of (path, mtime, size, CELL, view, version) — path-safe and
+ * computed over the full path (no truncation). Caller frees. */
+static char *cache_key(const char *file_path, int view_mode,
+                       int64_t mtime, int64_t fsize)
 {
-    /* Use g_compute_checksum for a portable SHA256 */
-    char buf[256];
-    int n = g_snprintf(buf, sizeof(buf), "%s:%d:%d:v%d", file_path, CELL, view_mode, CACHE_VERSION);
-    gchar *cs = g_compute_checksum_for_string(G_CHECKSUM_SHA256, buf, n);
-    g_strlcpy(out, cs, out_sz);
-    g_free(cs);
+    char *input = g_strdup_printf("%s|%" G_GINT64_FORMAT "|%" G_GINT64_FORMAT
+                                  "|%d|%d|v%d",
+                                  file_path, mtime, fsize, CELL, view_mode,
+                                  CACHE_VERSION);    char *cs = g_compute_checksum_for_string(G_CHECKSUM_SHA256, input, -1);
+    g_free(input);
+    return cs;
 }
 
-static char *cache_file_path(const char *file_path, int view_mode)
+static char *cache_file_path(const char *file_path, int view_mode,
+                             int64_t mtime, int64_t fsize)
 {
-    char key[65];
-    cache_key(file_path, view_mode, key, sizeof(key));
-    return g_build_filename(cache_dir_path(), key, "png", NULL);
+    char *key = cache_key(file_path, view_mode, mtime, fsize);
+    char *path = g_strdup_printf("%s/%s.png", cache_dir_path(), key);
+    g_free(key);
+    return path;
 }
 
-/* Try to load a cached thumbnail. Returns a new cairo_surface_t or NULL. */
-static cairo_surface_t *load_cached_thumb(const char *file_path, int view_mode)
+static char *cache_meta_path(const char *file_path, int view_mode,
+                             int64_t mtime, int64_t fsize)
 {
-    char *path = cache_file_path(file_path, view_mode);
+    char *key = cache_key(file_path, view_mode, mtime, fsize);
+    char *path = g_strdup_printf("%s/%s.meta", cache_dir_path(), key);
+    g_free(key);
+    return path;
+}
+
+/* Try to load a cached thumbnail + its metadata sidecar.
+ * Returns 1 on hit (thumb_out + metadata filled), 0 on miss. */
+static int load_cached_thumb(const char *file_path, int view_mode,
+                             int64_t mtime, int64_t fsize,
+                             cairo_surface_t **thumb_out,
+                             int *file_type, int *tri_count,
+                             float *bbox, float *center, float *ext)
+{
+    char *path = cache_file_path(file_path, view_mode, mtime, fsize);
     cairo_surface_t *s = cairo_image_surface_create_from_png(path);
     g_free(path);
     if (cairo_surface_status(s) != CAIRO_STATUS_SUCCESS) {
         cairo_surface_destroy(s);
-        return NULL;
+        return 0;
     }
-    return s;
+    *thumb_out = s;
+    *file_type = 0;
+    *tri_count = 0;
+    for (int i = 0; i < 6; ++i) bbox[i] = 0;
+    for (int i = 0; i < 3; ++i) center[i] = 0;
+    *ext = 0;
+    char *meta = cache_meta_path(file_path, view_mode, mtime, fsize);
+    char *contents = NULL;
+    if (g_file_get_contents(meta, &contents, NULL, NULL) &&
+        sscanf(contents, "%d %d %f %f %f %f %f %f %f %f %f %f",
+               file_type, tri_count,
+               &bbox[0], &bbox[1], &bbox[2], &bbox[3], &bbox[4], &bbox[5],
+               &center[0], &center[1], &center[2], ext) == 12) {
+        /* metadata recovered */
+    }
+    g_free(contents);
+    g_free(meta);
+    return 1;
 }
 
-/* Save a thumbnail to the cache. */
+/* Save a thumbnail + metadata sidecar to the cache. */
 static void save_cached_thumb(const char *file_path, int view_mode,
-                              cairo_surface_t *thumb)
+                              int64_t mtime, int64_t fsize,
+                              cairo_surface_t *thumb,
+                              int file_type, int tri_count,
+                              const float *bbox, const float *center, float ext)
 {
     char *dir = cache_dir_path();
-    char *file = cache_file_path(file_path, view_mode);
+    char *file = cache_file_path(file_path, view_mode, mtime, fsize);
     if (g_mkdir_with_parents(dir, 493 /* 0755 */) == 0) {
         cairo_surface_write_to_png(thumb, file);
+        char *meta = g_strdup_printf("%d %d %.9g %.9g %.9g %.9g %.9g %.9g "
+                                     "%.9g %.9g %.9g %.9g",
+                                     file_type, tri_count,
+                                     bbox[0], bbox[1], bbox[2],
+                                     bbox[3], bbox[4], bbox[5],
+                                     center[0], center[1], center[2], ext);
+        char *meta_path = cache_meta_path(file_path, view_mode, mtime, fsize);
+        g_file_set_contents(meta_path, meta, -1, NULL);
+        g_free(meta_path);
+        g_free(meta);
     }
     g_free(file);
     g_free(dir);
@@ -963,18 +1126,18 @@ static GPtrArray *render_paths(GPtrArray *paths, UI *ui)
         float bbox[6] = {0}, center[3] = {0}, ext = 0;
         int tri_count = 0, vert_count = 0;
         struct stat st;
-        int file_size = 0;
-        time_t mtime = 0;
+        int64_t file_size = 0, mtime = 0;
 
         /* Stat the file (always available) */
         if (stat(fpath, &st) == 0) {
-            file_size = (int)st.st_size;
+            file_size = st.st_size;
             mtime = st.st_mtime;
         }
 
-        /* Try cache first */
-        thumb = load_cached_thumb(fpath, view_mode);
-        if (!thumb) {
+        /* Try cache first (key includes mtime + size, so edits invalidate) */
+        if (!load_cached_thumb(fpath, view_mode, mtime, file_size,
+                               &thumb, &file_type, &tri_count,
+                               bbox, center, &ext)) {
             Mesh mesh = {0};
             int ok = load_mesh(fpath, &mesh);
             if (ok) {
@@ -995,7 +1158,8 @@ static GPtrArray *render_paths(GPtrArray *paths, UI *ui)
                 thumb = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, CELL, CELL);
                 render_mesh(&mesh, thumb, view_mode, bbox, center, &ext);
                 cairo_surface_mark_dirty(thumb);
-                save_cached_thumb(fpath, view_mode, thumb);
+                save_cached_thumb(fpath, view_mode, mtime, file_size, thumb,
+                                  file_type, tri_count, bbox, center, ext);
                 free(mesh.tris);
             }
         }
@@ -1567,9 +1731,14 @@ static void on_open_containing_folder(GtkMenuItem *menuitem, gpointer data)
     Item *it = g_object_get_data(G_OBJECT(menuitem), "item");
     if (!it || !it->path) return;
     char *dir = g_path_get_dirname(it->path);
-    char *cmd = g_strdup_printf("xdg-open \"%s\" &", dir);
-    g_spawn_command_line_async(cmd, NULL);
-    g_free(cmd);
+    GFile *f = g_file_new_for_path(dir);
+    char *uri = g_file_get_uri(f);
+    GError *err = NULL;
+    if (!g_app_info_launch_default_for_uri(uri, NULL, &err))
+        g_warning("cannot open folder: %s", err ? err->message : "unknown error");
+    if (err) g_error_free(err);
+    g_free(uri);
+    g_object_unref(f);
     g_free(dir);
 }
 
@@ -1606,9 +1775,14 @@ static void on_open_default(GtkMenuItem *menuitem, gpointer data)
     (void)data;
     Item *it = g_object_get_data(G_OBJECT(menuitem), "item");
     if (!it || !it->path) return;
-    char *cmd = g_strdup_printf("xdg-open \"%s\" &", it->path);
-    g_spawn_command_line_async(cmd, NULL);
-    g_free(cmd);
+    GFile *f = g_file_new_for_path(it->path);
+    char *uri = g_file_get_uri(f);
+    GError *err = NULL;
+    if (!g_app_info_launch_default_for_uri(uri, NULL, &err))
+        g_warning("cannot open file: %s", err ? err->message : "unknown error");
+    if (err) g_error_free(err);
+    g_free(uri);
+    g_object_unref(f);
 }
 
 /* Move the blue selection border to `it`'s thumbnail without rebuilding
@@ -1822,12 +1996,12 @@ static void on_view_toggled(GtkToggleButton *b, UI *ui)
 {
     if (!gtk_toggle_button_get_active(b))
         return; /* group member being deselected */
+    ui->view_mode = (ViewMode)GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "view_mode"));
     if (ui->rendering) {
         ui->view_dirty = 1; /* re-render with the new view once done */
         return;
     }
     ui->rendering = 1;
-    ui->view_mode = (ViewMode)GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "view_mode"));
     rerender_current_items(ui);
     after_render(ui);
 }
@@ -1838,12 +2012,12 @@ static void on_sort_changed(GtkComboBox *combo, UI *ui)
     int idx = gtk_combo_box_get_active(combo);
     if (idx < 0 || idx >= SORT_DATE)
         return;
+    ui->sort_mode = (SortMode)idx;
     if (ui->rendering) {
         ui->view_dirty = 1;
         return;
     }
     ui->rendering = 1;
-    ui->sort_mode = (SortMode)idx;
     rerender_current_items(ui);
     after_render(ui);
 }
@@ -2641,10 +2815,11 @@ int main(int argc, char **argv)
     g_ptr_array_free(init_paths, FALSE);
 
     /* the root (first 20 files) is what is shown now; drop any selection
-     * that was deferred during setup */
+     * that was deferred during setup, and honor a view/sort change that
+     * arrived while the initial render was in flight */
     g_free(ui.pending_path);
     ui.pending_path = NULL;
-    ui.rendering = 0;
+    after_render(&ui);
 
     /* Update status bar for the first item (if any) */
     if (ui.items->len > 0)
