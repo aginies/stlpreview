@@ -1,8 +1,0 @@
-{
-  "network": {
-    "allowedDomains": [
-      "schemas.microsoft.com"
-    ],
-    "deniedDomains": []
-  }
-}
