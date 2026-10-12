@@ -1,0 +1,180 @@
+---
+name: CI
+
+# Quoted because YAML 1.1 reads a bare `on` as the boolean true.
+"on":
+  push:
+    branches: [main, master]
+  pull_request:
+
+# Least privilege: this workflow only builds and tests, it never writes back
+# to the repository, so the default (broad) token is not needed.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: ubuntu-latest
+
+    steps:
+      # Pinned to a commit rather than a tag: a tag can be force-moved after
+      # review, a SHA cannot. This is actions/checkout v4.4.0.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          # Nothing here pushes, and leaving the token in the git config would
+          # expose it to every later step.
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config \
+            libgtk-3-dev zlib1g-dev \
+            xvfb python3
+
+      - name: Configure
+        # Warnings are errors in CI: the tree builds clean with
+        # -Wall -Wextra -Wshadow, and a new warning should stop the build
+        # rather than scroll past in a log nobody reads.
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Debug -DSTLPREVIEW_WERROR=ON
+
+      - name: Build
+        run: cmake --build build --parallel "$(nproc)"
+
+      - name: Unit tests
+        # model.c, render.c and cache.c have no GTK dependency, so these run
+        # headless. `cd` rather than `ctest --test-dir`, to stay compatible
+        # with the CMake 3.10 this project declares.
+        run: cd build && ctest --output-on-failure
+
+      - name: Formatting
+        # Pinned to the version .clang-format was verified against:
+        # clang-format output is not stable across major versions, so an
+        # unpinned run would drift and fail for unrelated reasons.
+        run: |
+          pipx install clang-format==23.1.3
+          clang-format --dry-run --Werror \
+            *.c *.h tests/*.c tests/*.h
+
+      - name: Generate test models
+        # A binary STL, an ASCII STL and a 3MF, so the smoke test exercises
+        # all three readers -- including the zlib inflate path for the 3MF
+        # package.
+        run: |
+          mkdir -p /tmp/models
+          python3 - <<'PY'
+          import struct, zipfile
+
+          V = [(0,0,0),(1,0,0),(1,1,0),(0,1,0),
+               (0,0,1),(1,0,1),(1,1,1),(0,1,1)]
+          F = [(0,3,2),(0,2,1),(4,5,6),(4,6,7),(0,1,5),(0,5,4),
+               (3,7,6),(3,6,2),(0,4,7),(0,7,3),(1,2,6),(1,6,5)]
+
+          with open('/tmp/models/cube.stl', 'wb') as f:
+              f.write(b'\0' * 80)
+              f.write(struct.pack('<I', len(F)))
+              for a, b, c in F:
+                  f.write(struct.pack('<12fH', 0, 0, 0,
+                                      *V[a], *V[b], *V[c], 0))
+
+          with open('/tmp/models/ascii.stl', 'w') as f:
+              f.write('solid ci\n')
+              for a, b, c in F:
+                  f.write(' facet normal 0 0 0\n  outer loop\n')
+                  for i in (a, b, c):
+                      f.write('   vertex %f %f %f\n' % V[i])
+                  f.write('  endloop\n endfacet\n')
+              f.write('endsolid ci\n')
+
+          # A tetrahedron, packaged as a real 3MF.
+          model = '''<?xml version="1.0" encoding="UTF-8"?>
+          <model unit="millimeter" xml:lang="en-US"
+           xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+           <resources>
+            <object id="1" type="model"><mesh>
+             <vertices>
+              <vertex x="0" y="0" z="0"/><vertex x="10" y="0" z="0"/>
+              <vertex x="0" y="10" z="0"/><vertex x="0" y="0" z="10"/>
+             </vertices>
+             <triangles>
+              <triangle v1="0" v2="1" v3="2"/>
+              <triangle v1="0" v2="1" v3="3"/>
+              <triangle v1="0" v2="2" v3="3"/>
+              <triangle v1="1" v2="2" v3="3"/>
+             </triangles>
+            </mesh></object>
+           </resources>
+           <build><item objectid="1"/></build>
+          </model>'''
+
+          # Split so no source line exceeds the project's 80 columns.
+          ct_ns = ('http://schemas.openxmlformats.org/'
+                   'package/2006/content-types')
+          ct_mt = ('application/vnd.ms-package.'
+                   '3dmanufacturing-3dmodel+xml')
+          types = ('<?xml version="1.0" encoding="UTF-8"?>'
+                   '<Types xmlns="' + ct_ns + '">'
+                   '<Default Extension="model"'
+                   ' ContentType="' + ct_mt + '"/></Types>')
+
+          with zipfile.ZipFile('/tmp/models/part.3mf', 'w',
+                               zipfile.ZIP_DEFLATED) as z:
+              z.writestr('[Content_Types].xml', types)
+              z.writestr('3D/3dmodel.model', model)
+          PY
+          ls -l /tmp/models
+
+      - name: Smoke test - headless PNG export
+        # The export path deliberately never opens a window, so this needs
+        # no display and proves the whole load -> render -> compose pipeline.
+        run: |
+          ./build/stlpreview /tmp/models -o /tmp/grid.png
+          test -s /tmp/grid.png
+          python3 - <<'PY'
+          import struct
+          d = open('/tmp/grid.png', 'rb').read()
+          assert d[:8] == b'\x89PNG\r\n\x1a\n', 'not a PNG'
+          w, h = struct.unpack('>II', d[16:24])
+          print(f'grid: {w}x{h}')
+          assert w > 0 and h > 0, 'empty grid'
+          # 3 files fit one row of 3 columns at GRID_DEFAULT_WIDTH.
+          assert h < w, f'expected one row of 3, got {w}x{h}'
+          PY
+
+      - name: Smoke test - GUI under Xvfb
+        # ui.c is the one module the unit tests cannot reach. Start it on a
+        # virtual display, let it render, and require that it was still
+        # alive when the timeout fired and logged no GTK complaints.
+        run: |
+          set +e
+          timeout 25 xvfb-run -a ./build/stlpreview /tmp/models \
+            > /tmp/gui.log 2>&1
+          rc=$?
+          set -e
+          cat /tmp/gui.log
+          # 124 means the timeout killed a still-running viewer, which is
+          # the success case; anything else means it exited or crashed.
+          test "$rc" -eq 124
+          ! grep -qiE 'critical|assertion|segfault|corrupt' /tmp/gui.log
+
+      - name: Smoke test - thumbnail cache is reused
+        # A second export must be a cache hit, not a re-render. This is the
+        # regression that RGB24-vs-ARGB32 thumbnail validation once broke:
+        # every entry was rejected, deleted and rendered again.
+        run: |
+          export XDG_CACHE_HOME=/tmp/ci-cache
+          rm -rf "$XDG_CACHE_HOME"
+          ./build/stlpreview /tmp/models -o /tmp/cold.png > /dev/null
+          n1=$(find "$XDG_CACHE_HOME" -name '*.png' | wc -l)
+          test "$n1" -gt 0
+          ./build/stlpreview /tmp/models -o /tmp/warm.png > /dev/null
+          n2=$(find "$XDG_CACHE_HOME" -name '*.png' | wc -l)
+          echo "cached thumbnails: cold=$n1 warm=$n2"
+          # A cache that never hits deletes and rewrites every entry, so
+          # the count and the output must both be unchanged.
+          test "$n2" -eq "$n1"
+          cmp /tmp/cold.png /tmp/warm.png

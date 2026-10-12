@@ -1,0 +1,85 @@
+# stlpreview formatting.
+#
+# This file describes the style the sources are already written in, so running
+# clang-format over the tree should be a near no-op rather than a reflow:
+#
+#     clang-format -i *.c *.h          # apply in place
+#     git diff --exit-code             # CI check: is everything formatted?
+#
+# 4-space indent, 80 columns, braces on their own line for functions and
+# attached for everything else, `char *p` pointer alignment, and short
+# `if (...) return;` guards left on one line.
+---
+Language: Cpp
+BasedOnStyle: LLVM
+
+Standard: Latest
+
+IndentWidth: 4
+TabWidth: 8
+UseTab: Never
+ContinuationIndentWidth: 4
+ConstructorInitializerIndentWidth: 4
+
+ColumnLimit: 80
+
+# function bodies open on the next line; control statements and aggregates
+# keep the brace on the same line.
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterFunction: true
+  AfterControlStatement: Never
+  AfterStruct: false
+  AfterEnum: false
+  AfterUnion: false
+  AfterCaseLabel: false
+  AfterExternBlock: false
+  BeforeCatch: false
+  BeforeElse: false
+  IndentBraces: false
+  SplitEmptyFunction: false
+  SplitEmptyRecord: false
+  SplitEmptyNamespace: false
+
+PointerAlignment: Right
+DerivePointerAlignment: false
+
+IndentCaseLabels: true
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+# Every function in this project is spelled out over multiple lines, even the
+# one-line ones: they carry comments more often than not.
+AllowShortFunctionsOnASingleLine: None
+
+AlignAfterOpenBracket: Align
+AlignConsecutiveMacros: true
+AlignConsecutiveDeclarations: false
+AlignTrailingComments: true
+AlignEscapedNewlines: Left
+AlignOperands: true
+
+BinPackArguments: true
+BinPackParameters: true
+BreakBeforeBinaryOperators: None
+BreakBeforeTernaryOperators: true
+
+# Include order is deliberate: C system headers, then GLib/GTK/cairo, then the
+# project headers. Letting clang-format sort them would interleave the groups.
+SortIncludes: Never
+IncludeBlocks: Preserve
+
+SpaceBeforeParens: ControlStatements
+SpaceAfterCStyleCast: false
+SpaceBeforeAssignmentOperators: true
+SpacesInCStyleCastParentheses: false
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 2
+
+# Comments are the main documentation in this project; never reflow them.
+ReflowComments: false
+CommentPragmas: 'NOLINT.*'

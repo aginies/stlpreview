@@ -1,11 +1,28 @@
+# Build trees. ./build.sh uses release/ and debug/; the documented manual
+# build (`cmake -S . -B build`) uses build/. A pattern with no leading slash
+# matches at any depth, so tests/build/ is covered too.
 build/
-build-debug/
-release/
 debug/
-stl-grid
-# LSP helper (symlink to release/compile_commands.json)
-compile_commands.json
-# CMake files in source dir (from accidental `cmake -S . -B .`)
+release/
+
+# Leftovers from an accidental in-source `cmake -S . -B .`.
 CMakeCache.txt
+CMakeFiles/
 Makefile
 cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+
+# Symlink ./build.sh drops in the source tree so clangd can find the
+# pkg-config include paths.
+compile_commands.json
+
+# Editor and tooling caches.
+.cache/
+.clangd/
+.idea
+.vscode
+.ruff_cache/
+
+# Local environment; may hold secrets.
+.env
