@@ -1526,6 +1526,23 @@ static gboolean on_preview_clicked(GtkWidget *w, GdkEventButton *ev,
     return FALSE;
 }
 
+/* g_sort_array() only exists from GLib 2.82 on, where it also deprecates
+ * g_qsort_with_data(). Backfill it on older headers (CI's Ubuntu 24.04 ships
+ * 2.80) so the tree builds against any GTK3 stack without tripping either
+ * the implicit-declaration error below 2.82 or the deprecation warning at or
+ * above it. The fallback's quicksort is not stable, but every comparator
+ * used with it here tie-breaks on the path, so the order is deterministic
+ * either way. */
+#if !GLIB_CHECK_VERSION(2, 82, 0)
+static void g_sort_array(const void *array, size_t n_elements,
+                         size_t element_size, GCompareDataFunc compare_func,
+                         void *user_data)
+{
+    g_qsort_with_data(array, (gint)n_elements, element_size, compare_func,
+                      user_data);
+}
+#endif
+
 /* A model path together with the stat data needed to sort it. Collecting the
  * metadata once (instead of calling stat() from inside the comparator) keeps
  * a directory listing at O(n) syscalls rather than O(n log n). */
